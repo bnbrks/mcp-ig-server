@@ -1,0 +1,16 @@
+{
+  "name": "mcp-ig-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "ig-markets-api": "^2.0.0",
+    "string-similarity": "^4.0.4"
+  }
+}
