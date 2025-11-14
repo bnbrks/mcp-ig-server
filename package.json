@@ -1,5 +1,5 @@
 {
-  "name": "mcp-ig-server",
+  "name": "ig-mcp-v3-server",
   "version": "1.0.0",
   "main": "server.js",
   "type": "module",
@@ -10,7 +10,6 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "axios": "^1.6.0",
     "dotenv": "^16.4.0",
-    "ig-markets-api-node": "^1.0.8",
     "string-similarity": "^4.0.4"
   }
 }

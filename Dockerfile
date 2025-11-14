@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY package.json .
 COPY server.js .
+COPY igClient.js .
 COPY .dockerignore .
 
 RUN npm install --omit=dev
