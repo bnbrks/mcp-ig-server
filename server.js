@@ -1,102 +1,178 @@
 import express from "express";
 import cors from "cors";
-import IGClient from "./igClient.js";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
-const SHARED_SECRET = process.env.MCP_SHARED_SECRET || "potato";
+const AUTH = process.env.MCP_AUTH_TOKEN || "potato";
 
-function checkAuth(req, res) {
-  const auth = req.headers.authorization || "";
-  if (!auth.startsWith("Bearer ")) {
-    res.writeHead(401);
-    res.end("Unauthorized");
-    return false;
+// IG API ENV
+const IG_API_KEY = process.env.IG_API_KEY;
+const IG_IDENTIFIER = process.env.IG_IDENTIFIER;
+const IG_PASSWORD = process.env.IG_PASSWORD;
+const IG_API_URL = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
+
+let CST = null;
+let XST = null;
+
+// IG SESSION LOGIN
+async function igLogin() {
+  const res = await fetch(IG_API_URL + "/session", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-IG-API-KEY": IG_API_KEY
+    },
+    body: JSON.stringify({
+      identifier: IG_IDENTIFIER,
+      password: IG_PASSWORD
+    })
+  });
+
+  CST = res.headers.get("CST");
+  XST = res.headers.get("X-SECURITY-TOKEN");
+
+  if (!res.ok) throw new Error("IG login failed: " + res.status);
+  return { CST, XST };
+}
+
+async function igHeaders() {
+  if (!CST || !XST) await igLogin();
+  return {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-IG-API-KEY": IG_API_KEY,
+    "CST": CST,
+    "X-SECURITY-TOKEN": XST
+  };
+}
+
+// IG METHODS
+const IG = {
+  async getMarkets(epic) {
+    const res = await fetch(`${IG_API_URL}/markets/${epic}`, {
+      headers: await igHeaders()
+    });
+    return res.json();
+  },
+
+  async getPrices(epic, resolution, max = 10) {
+    const res = await fetch(
+      `${IG_API_URL}/prices/${epic}?resolution=${resolution}&max=${max}`,
+      { headers: await igHeaders() }
+    );
+    return res.json();
+  },
+
+  async getPositions() {
+    const res = await fetch(`${IG_API_URL}/positions`, {
+      headers: await igHeaders()
+    });
+    return res.json();
+  },
+
+  async openPosition(body) {
+    const res = await fetch(`${IG_API_URL}/positions/otc`, {
+      method: "POST",
+      headers: await igHeaders(),
+      body: JSON.stringify(body)
+    });
+    return res.json();
+  },
+
+  async closePosition(dealId) {
+    const res = await fetch(`${IG_API_URL}/positions/otc`, {
+      method: "POST",
+      headers: await igHeaders(),
+      body: JSON.stringify({
+        dealId,
+        direction: "SELL",
+        size: 1
+      })
+    });
+    return res.json();
   }
-  if (auth.substring(7) !== SHARED_SECRET) {
-    res.writeHead(403);
-    res.end("Forbidden");
+};
+
+// RPC HANDLER
+async function handleRPC({ id, method, params }) {
+  try {
+    switch (method) {
+      case "ping":
+        return { id, result: { pong: true } };
+
+      case "ig.login":
+        return { id, result: await igLogin() };
+
+      case "ig.getMarkets":
+        return { id, result: await IG.getMarkets(params.epic) };
+
+      case "ig.getPrices":
+        return { id, result: await IG.getPrices(params.epic, params.resolution, params.max) };
+
+      case "ig.getPositions":
+        return { id, result: await IG.getPositions() };
+
+      case "ig.openPosition":
+        return { id, result: await IG.openPosition(params) };
+
+      case "ig.closePosition":
+        return { id, result: await IG.closePosition(params.dealId) };
+
+      default:
+        return { id, error: "Unknown method" };
+    }
+  } catch (err) {
+    return { id, error: err.toString() };
+  }
+}
+
+// AUTH CHECK
+function checkAuth(req, res) {
+  const header = req.headers.authorization || "";
+  if (header !== `Bearer ${AUTH}`) {
+    res.status(401).json({ error: "Unauthorized" });
     return false;
   }
   return true;
 }
 
-app.get("/mcp", (req, res) => {
+// POST /rpc
+app.post("/rpc", async (req, res) => {
   if (!checkAuth(req, res)) return;
+
+  const rpc = req.body;
+  const response = await handleRPC(rpc);
+  res.json(response);
+});
+
+// GET /mcp â SSE
+app.get("/mcp", async (req, res) => {
+  if (!checkAuth(req, res)) return;
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
-    Connection: "keep-alive"
+    "Connection": "keep-alive"
   });
 
-  req.on("data", async chunk => handleRPC(chunk, res));
-  req.on("close", () => res.end());
-});
+  // Send initial ready signal
+  res.write("data: " + JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\n\n");
 
-app.get("/public-mcp", (req, res) => {
-  req.headers.authorization = "Bearer " + SHARED_SECRET;
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
-  });
-
-  req.on("data", async chunk => handleRPC(chunk, res));
-  req.on("close", () => res.end());
-});
-
-async function handleRPC(chunk, res) {
-  try {
-    const { id, method, params } = JSON.parse(chunk.toString());
-    const ig = new IGClient();
-
-    function send(resp) {
-      res.write("data: " + JSON.stringify(resp) + "\n\n");
-    }
-
+  req.on("data", async chunk => {
     try {
-      switch (method) {
-        case "ping":
-          return send({ id, result: { pong: true } });
-
-        case "getMarketDetails":
-          return send({ id, result: await ig.getMarketDetails(params.epic) });
-
-        case "getHistoricalPrices":
-          return send({
-            id,
-            result: await ig.getHistoricalPrices(
-              params.epic,
-              params.resolution,
-              params.max
-            )
-          });
-
-        case "placeOrder":
-          return send({ id, result: await ig.placeOrder(params) });
-
-        case "getPositions":
-          return send({ id, result: await ig.getPositions() });
-
-        case "getAccountSummary":
-          return send({ id, result: await ig.getAccountSummary() });
-
-        case "closePosition":
-          return send({ id, result: await ig.closePosition(params.dealId) });
-
-        default:
-          return send({ id, error: "Unknown method" });
-      }
-    } catch (err) {
-      return send({ id, error: err.toString() });
+      const rpc = JSON.parse(chunk.toString());
+      const response = await handleRPC(rpc);
+      res.write("data: " + JSON.stringify(response) + "\n\n");
+    } catch {
+      res.write("data: {\"error\":\"Invalid JSON\"}\n\n");
     }
-  } catch {
-    res.write("data: {\"error\":\"Invalid JSON\"}\n\n");
-  }
-}
+  });
 
-app.listen(PORT, () => console.log("MCP server running on", PORT));
+  req.on("close", () => res.end());
+});
+
+app.listen(PORT, () => console.log("Hybrid MCP server running on", PORT));
