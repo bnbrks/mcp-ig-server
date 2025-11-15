@@ -1,15 +1,7 @@
-FROM node:20
-
+FROM node:20-slim
 WORKDIR /app
-ENV PORT=3000
-
-COPY package.json .
-COPY server.js .
-COPY igClient.js .
-COPY .dockerignore .
-
+COPY package.json ./
 RUN npm install --omit=dev
-
+COPY . .
 EXPOSE 3000
-
 CMD ["node", "server.js"]

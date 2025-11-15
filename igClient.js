@@ -1,90 +1,53 @@
 import axios from "axios";
 
-export default class IGClientV3 {
-  constructor() {
-    this.apiKey = process.env.IG_API_KEY;
-    this.username = process.env.IG_USERNAME;
-    this.password = process.env.IG_PASSWORD;
-    this.accountId = process.env.IG_ACCOUNT_ID;
-    this.baseUrl = process.env.IG_BASE_URL || "https://api.ig.com/gateway/deal";
+export class IGClient {
+  constructor(apiKey, identifier, password, baseUrl) {
+    this.apiKey = apiKey;
+    this.identifier = identifier;
+    this.password = password;
+    this.baseUrl = baseUrl;
+    this.client = axios.create({
+      baseURL: baseUrl,
+      headers: { "X-IG-API-KEY": apiKey, "Content-Type": "application/json" }
+    });
+    this.securityToken = null;
     this.cst = null;
-    this.token = null;
   }
 
   async login() {
-    const res = await axios.post(
-      this.baseUrl + "/session",
-      {
-        identifier: this.username,
-        password: this.password
-      },
-      {
-        headers: {
-          "X-IG-API-KEY": this.apiKey,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Version": "3"
-        }
-      }
-    );
-
-    this.cst = res.headers["cst"];
-    this.token = res.headers["x-security-token"];
+    const resp = await this.client.post("/session", {
+      identifier: this.identifier,
+      password: this.password,
+    });
+    this.cst = resp.headers["cst"];
+    this.securityToken = resp.headers["x-security-token"];
+    this.client.defaults.headers["CST"] = this.cst;
+    this.client.defaults.headers["X-SECURITY-TOKEN"] = this.securityToken;
   }
 
-  async authed() {
-    if (!this.cst || !this.token) await this.login();
-    return {
-      "X-IG-API-KEY": this.apiKey,
-      "X-SECURITY-TOKEN": this.token,
-      "CST": this.cst,
-      "Version": "3",
-      "Content-Type": "application/json",
-      "Accept": "application/json"
-    };
+  async ensureAuth() {
+    if (!this.cst) await this.login();
   }
 
-  async getPositions() {
-    const h = await this.authed();
-    const res = await axios.get(this.baseUrl + "/positions", { headers: h });
-    return res.data;
-  }
-
-  async getPrice(epic) {
-    const h = await this.authed();
-    const res = await axios.get(this.baseUrl + `/markets/${epic}`, { headers: h });
-    return res.data;
-  }
-
-  async getHistorical(epic, resolution, range) {
-    const h = await this.authed();
-    const to = new Date();
-    const from = new Date(Date.now() - range * 60000);
-    const res = await axios.get(
-      this.baseUrl + `/prices/${epic}?resolution=${resolution}&from=${from.toISOString()}&to=${to.toISOString()}`,
-      { headers: h }
-    );
-    return res.data;
+  async getHistorical(epic, resolution, max) {
+    await this.ensureAuth();
+    const resp = await this.client.get(`/prices/${epic}`, {
+      params: { resolution, max },
+    });
+    return resp.data;
   }
 
   async getHistoricalRange(epic, resolution, from, to) {
-    const h = await this.authed();
-    const res = await axios.get(
-      this.baseUrl + `/prices/${epic}?resolution=${resolution}&from=${from}&to=${to}`,
-      { headers: h }
-    );
-    return res.data;
+    await this.ensureAuth();
+    const resp = await this.client.get(`/prices/${epic}`, {
+      params: { resolution, from, to },
+    });
+    return resp.data;
   }
 
-  async openPosition(body) {
-    const h = await this.authed();
-    const res = await axios.post(this.baseUrl + "/positions", body, { headers: h });
-    return res.data;
-  }
-
-  async closePosition(dealId) {
-    const h = await this.authed();
-    const res = await axios.delete(this.baseUrl + `/positions/${dealId}`, { headers: h });
-    return res.data;
+  async placeTrade(body) {
+    await this.ensureAuth();
+    const resp = await this.client.post("/positions/otc", body);
+    return resp.data;
   }
 }

@@ -1,128 +1,43 @@
-import dotenv from "dotenv";
-import { Server } from "@modelcontextprotocol/sdk/server.js";
-import { HttpServerTransport } from "@modelcontextprotocol/sdk/server/transports/http.js";
-import IGClientV3 from "./igClient.js";
-import stringSimilarity from "string-similarity";
-
-dotenv.config();
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { SseServerTransport } from "@modelcontextprotocol/sdk/server/transports/sse.js";
+import { IGClient } from "./igClient.js";
 
 const PORT = process.env.PORT || 3000;
 
-const ig = new IGClientV3();
-let pendingTrades = [];
-
 const server = new Server({
-  name: "ig-mcp-v3",
-  version: "1.1.0"
+  name: "ig-mcp-v3-sse",
+  version: "1.0.0"
 });
 
-// Add HTTP Transport
-const httpTransport = new HttpServerTransport({
+const ig = new IGClient(
+  process.env.IG_API_KEY,
+  process.env.IG_IDENTIFIER,
+  process.env.IG_PASSWORD,
+  process.env.IG_API_URL || "https://api.ig.com/gateway/deal"
+);
+
+server.addMethod("ig.getHistorical", async ({ params }) => {
+  return ig.getHistorical(params.epic, params.resolution, params.max || 100);
+});
+
+server.addMethod("ig.getHistoricalRange", async ({ params }) => {
+  return ig.getHistoricalRange(params.epic, params.resolution, params.from, params.to);
+});
+
+server.addMethod("ig.placeTrade", async ({ params }) => {
+  return ig.placeTrade(params);
+});
+
+const transport = new SseServerTransport({
   port: PORT,
-  path: "/mcp"
+  path: "/mcp/sse"
 });
 
-server.addTransport(httpTransport);
+server.addTransport(transport);
 
-// Tools
-server.tool("ig.getPositions", {
-  execute: async () => ig.getPositions()
+server.on("error", (err) => {
+  console.error("MCP server error:", err);
 });
 
-server.tool("ig.getPrice", {
-  inputSchema: { type: "string" },
-  execute: async ({ input }) => ig.getPrice(input)
-});
-
-server.tool("ig.getHistorical", {
-  inputSchema: {
-    type: "object",
-    properties: {
-      epic: { type: "string" },
-      resolution: { type: "string" },
-      range: { type: "number" }
-    }
-  },
-  execute: async ({ input }) =>
-    ig.getHistorical(input.epic, input.resolution, input.range)
-});
-
-server.tool("ig.getHistoricalRange", {
-  inputSchema: {
-    type: "object",
-    properties: {
-      epic: { type: "string" },
-      resolution: { type: "string" },
-      from: { type: "string" },
-      to: { type: "string" }
-    }
-  },
-  execute: async ({ input }) =>
-    ig.getHistoricalRange(input.epic, input.resolution, input.from, input.to)
-});
-
-server.tool("ig.setPendingTrades", {
-  inputSchema: {
-    type: "array",
-    items: {
-      type: "object",
-      properties: {
-        epic: { type: "string" },
-        direction: { type: "string" },
-        size: { type: "number" },
-        stopDistance: { type: "number" },
-        limitDistance: { type: "number" },
-        label: { type: "string" }
-      }
-    }
-  },
-  execute: async ({ input }) => {
-    pendingTrades = input;
-    return { message: `Stored ${input.length} pending trades.` };
-  }
-});
-
-server.tool("ig.listPendingTrades", {
-  execute: async () => pendingTrades
-});
-
-server.tool("ig.confirmTrades", {
-  inputSchema: { type: "string" },
-  execute: async ({ input }) => {
-    if (!pendingTrades.length)
-      return { message: "No pending trades." };
-
-    const labels = pendingTrades.map(t =>
-      t.label || `${t.direction} ${t.epic}`.toUpperCase()
-    );
-
-    const match = stringSimilarity.findBestMatch(input.toUpperCase(), labels);
-
-    if (match.bestMatch.rating < 0.3)
-      return { message: "No match found." };
-
-    const i = match.bestMatchIndex;
-    const t = pendingTrades[i];
-
-    const result = await ig.openPosition({
-      epic: t.epic,
-      direction: t.direction,
-      size: t.size,
-      orderType: "MARKET"
-    });
-
-    pendingTrades.splice(i, 1);
-
-    return { message: "Trade executed.", result };
-  }
-});
-
-server.tool("ig.clearPendingTrades", {
-  execute: async () => {
-    pendingTrades = [];
-    return { message: "Cleared." };
-  }
-});
-
-server.start();
-console.log("IG MCP v3 HTTP server running on port", PORT);
+await server.start();
+console.log(`MCP SSE server running on port ${PORT} at /mcp/sse`);
