@@ -1,53 +1,90 @@
 import express from "express";
-import { createMCPServer } from "@modelcontextprotocol/sdk/server";
-import { SseTransport } from "@modelcontextprotocol/sdk/server/transports/sse.js";
 import IGClient from "./igClient.js";
 
 const app = express();
-const port = process.env.PORT || 8080;
+app.use(express.json());
 
-const REQUIRED_SECRET = process.env.MCP_SHARED_SECRET;
+const PORT = process.env.PORT || 8080;
+const SECRET = process.env.MCP_SHARED_SECRET;
 
-function authMiddleware(req, res, next) {
+// ---- AUTH ----
+function checkAuth(req, res) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Unauthorized (missing Bearer token)" });
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return false;
   }
   const token = auth.split(" ")[1];
-  if (token !== REQUIRED_SECRET) {
-    return res.status(401).json({ error: "Unauthorized (invalid token)" });
+  if (token !== SECRET) {
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return false;
   }
-  next();
+  return true;
 }
 
-const server = createMCPServer({
-  name: "ig-mcp-server",
-  version: "1.0.0",
-  description: "IG Trading MCP Server"
-});
+// ---- SSE MCP ----
+app.get("/mcp", (req, res) => {
+  if (!checkAuth(req, res)) return;
 
-const ig = new IGClient({
-  apiKey: process.env.IG_API_KEY,
-  identifier: process.env.IG_IDENTIFIER,
-  password: process.env.IG_PASSWORD,
-  accountId: process.env.IG_ACCOUNT_ID,
-  useDemo: process.env.IG_USE_DEMO === "true"
-});
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
 
-server.tool("ig_get_historical", {
-  description: "Get IG historical price data",
-  input: { epic: "string", resolution: "string", max: "number" },
-  execute: async ({ epic, resolution, max }) => {
-    const data = await ig.getHistoricalPrices(epic, resolution, max);
-    return { data };
+  const ig = new IGClient();
+
+  function send(msg) {
+    res.write(`data: ${JSON.stringify(msg)}\n\n`);
   }
+
+  req.on("data", async chunk => {
+    try {
+      const data = JSON.parse(chunk.toString());
+      const { id, method, params } = data;
+
+      async function ok(result) { send({ id, result }); }
+      async function err(e) { send({ id, error: e.toString() }); }
+
+      try {
+        switch (method) {
+          case "ping":
+            return ok({ pong: true });
+
+          case "ig.getMarkets":
+            return ok(await ig.getMarkets(params.searchTerm));
+
+          case "ig.placeTrade":
+            return ok(await ig.placeTrade(params));
+
+          case "ig.getHistorical":
+            return ok(await ig.getHistorical(params.epic, params.resolution, params.max));
+
+          case "ig.getHistoricalRange":
+            return ok(await ig.getHistoricalRange(params.epic, params.resolution, params.from, params.to));
+
+          case "ig.call":
+            return ok(await ig.call(params.endpoint, params));
+
+          default:
+            return err("Unknown method " + method);
+        }
+      } catch (e) {
+        return err(e);
+      }
+
+    } catch (e) {
+      send({ error: "Invalid JSON" });
+    }
+  });
+
+  req.on("close", () => res.end());
 });
 
-app.use("/mcp", authMiddleware, (req, res) => {
-  const transport = new SseTransport({ req, res });
-  server.connect(transport);
+app.get("/", (_, res) => {
+  res.send("IG MCP Server (Real Trading Enabled)");
 });
 
-app.get("/", (req, res) => res.send("IG MCP Server running"));
-
-app.listen(port, () => console.log(`MCP SSE server running on ${port}`));
+app.listen(PORT, () => console.log("IG MCP REAL server running on", PORT));
