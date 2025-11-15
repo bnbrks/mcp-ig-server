@@ -1,30 +1,39 @@
 import dotenv from "dotenv";
 import { Server } from "@modelcontextprotocol/sdk/server";
+import { HttpServerTransport } from "@modelcontextprotocol/sdk/server/transports/http";
 import IGClientV3 from "./igClient.js";
 import stringSimilarity from "string-similarity";
 
 dotenv.config();
+
+const PORT = process.env.PORT || 3000;
 
 const ig = new IGClientV3();
 let pendingTrades = [];
 
 const server = new Server({
   name: "ig-mcp-v3",
-  version: "1.0.0"
+  version: "1.1.0"
 });
 
-// GET POSITIONS
+// Add HTTP Transport
+const httpTransport = new HttpServerTransport({
+  port: PORT,
+  path: "/mcp"
+});
+
+server.addTransport(httpTransport);
+
+// Tools
 server.tool("ig.getPositions", {
   execute: async () => ig.getPositions()
 });
 
-// SIMPLE PRICE
 server.tool("ig.getPrice", {
   inputSchema: { type: "string" },
   execute: async ({ input }) => ig.getPrice(input)
 });
 
-// SIMPLE HISTORICAL (range)
 server.tool("ig.getHistorical", {
   inputSchema: {
     type: "object",
@@ -38,7 +47,6 @@ server.tool("ig.getHistorical", {
     ig.getHistorical(input.epic, input.resolution, input.range)
 });
 
-// ADVANCED RANGE HISTORICAL
 server.tool("ig.getHistoricalRange", {
   inputSchema: {
     type: "object",
@@ -53,7 +61,6 @@ server.tool("ig.getHistoricalRange", {
     ig.getHistoricalRange(input.epic, input.resolution, input.from, input.to)
 });
 
-// STORE PENDING TRADES
 server.tool("ig.setPendingTrades", {
   inputSchema: {
     type: "array",
@@ -66,8 +73,7 @@ server.tool("ig.setPendingTrades", {
         stopDistance: { type: "number" },
         limitDistance: { type: "number" },
         label: { type: "string" }
-      },
-      required: ["epic", "direction", "size"]
+      }
     }
   },
   execute: async ({ input }) => {
@@ -76,40 +82,22 @@ server.tool("ig.setPendingTrades", {
   }
 });
 
-// LIST PENDING TRADES
 server.tool("ig.listPendingTrades", {
   execute: async () => pendingTrades
 });
 
-// CONFIRM TRADES
 server.tool("ig.confirmTrades", {
   inputSchema: { type: "string" },
   execute: async ({ input }) => {
     if (!pendingTrades.length)
       return { message: "No pending trades." };
 
-    const txt = input.toLowerCase();
-
-    if (txt.includes("all")) {
-      const results = [];
-      for (const t of pendingTrades) {
-        const res = await ig.openPosition({
-          epic: t.epic,
-          direction: t.direction,
-          size: t.size,
-          orderType: "MARKET"
-        });
-        results.push(res);
-      }
-      pendingTrades = [];
-      return { message: "All trades executed.", results };
-    }
-
     const labels = pendingTrades.map(t =>
       t.label || `${t.direction} ${t.epic}`.toUpperCase()
     );
 
     const match = stringSimilarity.findBestMatch(input.toUpperCase(), labels);
+
     if (match.bestMatch.rating < 0.3)
       return { message: "No match found." };
 
@@ -129,7 +117,6 @@ server.tool("ig.confirmTrades", {
   }
 });
 
-// CLEAR
 server.tool("ig.clearPendingTrades", {
   execute: async () => {
     pendingTrades = [];
@@ -138,4 +125,4 @@ server.tool("ig.clearPendingTrades", {
 });
 
 server.start();
-console.log("IG MCP v3 server running...");
+console.log("IG MCP v3 HTTP server running on port", PORT);
