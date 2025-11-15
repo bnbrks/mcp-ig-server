@@ -23,13 +23,15 @@ const IG_API_URL = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
 let CST = null;
 let XST = null;
 
-// --------------- IG LOGIN ------------------
+// --------------- IG LOGIN (FIXED) ------------------
 async function igLogin() {
   const res = await fetch(IG_API_URL + "/session", {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "X-IG-API-KEY": IG_API_KEY
+      "Content-Type": "application/json; charset=UTF-8",
+      "Accept": "application/json; charset=UTF-8",
+      "X-IG-API-KEY": IG_API_KEY,
+      "Version": "2"
     },
     body: JSON.stringify({
       identifier: IG_IDENTIFIER,
@@ -40,22 +42,26 @@ async function igLogin() {
   CST = res.headers.get("CST");
   XST = res.headers.get("X-SECURITY-TOKEN");
 
-  if (!res.ok) throw new Error("IG login failed: " + res.status);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error("IG login failed: " + res.status + " | " + text);
+  }
 
   return { CST, XST };
 }
-// --------------------------------------------
+// ----------------------------------------------------
 
 // Retrieve headers with refreshed tokens if needed
 async function igHeaders() {
   if (!CST || !XST) await igLogin();
 
   return {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
+    "Content-Type": "application/json; charset=UTF-8",
+    "Accept": "application/json; charset=UTF-8",
     "X-IG-API-KEY": IG_API_KEY,
-    CST,
-    "X-SECURITY-TOKEN": XST
+    "CST": CST,
+    "X-SECURITY-TOKEN": XST,
+    "Version": "2"
   };
 }
 
@@ -175,7 +181,6 @@ app.get("/mcp", async (req, res) => {
     Connection: "keep-alive"
   });
 
-  // Notify client that connection is ready
   res.write(
     "data: " +
       JSON.stringify({ jsonrpc: "2.0", method: "ready" }) +
@@ -198,7 +203,6 @@ app.get("/mcp", async (req, res) => {
 
 // ----------------- PORT FIX -----------------
 const PORT = process.env.PORT || 8080;
-// --------------------------------------------
 
 app.listen(PORT, () => {
   console.log("Hybrid MCP server running on", PORT);
