@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
-import { Server } from "@modelcontextprotocol/sdk/server";
-import { HttpServerTransport } from "@modelcontextprotocol/sdk/server/transports/http";
+import { Server } from "@modelcontextprotocol/sdk/server.js";
+import { HttpServerTransport } from "@modelcontextprotocol/sdk/server/transports/http.js";
 import IGClientV3 from "./igClient.js";
 import stringSimilarity from "string-similarity";
 
