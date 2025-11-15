@@ -2,110 +2,60 @@ import axios from "axios";
 
 export default class IGClient {
   constructor() {
-    this.apiKey = process.env.IG_API_KEY;
-    this.identifier = process.env.IG_IDENTIFIER;
-    this.password = process.env.IG_PASSWORD;
-    this.accountId = process.env.IG_ACCOUNT_ID;
-    this.useDemo = process.env.IG_USE_DEMO === "true";
-
-    this.apiUrl = this.useDemo
-      ? "https://demo-api.ig.com/gateway/deal"
-      : "https://api.ig.com/gateway/deal";
-
+    this.key = process.env.IG_API_KEY;
+    this.user = process.env.IG_IDENTIFIER;
+    this.pass = process.env.IG_PASSWORD;
+    this.acc = process.env.IG_ACCOUNT_ID;
+    this.base = "https://api.ig.com/gateway/deal";
     this.cst = null;
     this.token = null;
   }
 
-  async ensureSession() {
+  async session() {
     if (this.cst && this.token) return;
-
-    const res = await axios.post(
-      this.apiUrl + "/session",
-      {
-        identifier: this.identifier,
-        password: this.password
-      },
-      {
-        headers: {
-          "X-IG-API-KEY": this.apiKey,
-          "Content-Type": "application/json"
-        }
-      }
+    const r = await axios.post(this.base+"/session",
+      { identifier:this.user, password:this.pass },
+      { headers:{ "X-IG-API-KEY":this.key, "Content-Type":"application/json" } }
     );
-
-    this.cst = res.headers["cst"];
-    this.token = res.headers["x-security-token"];
+    this.cst = r.headers["cst"];
+    this.token = r.headers["x-security-token"];
   }
 
-  async headers() {
-    await this.ensureSession();
+  async h() {
+    await this.session();
     return {
-      "X-IG-API-KEY": this.apiKey,
-      "CST": this.cst,
-      "X-SECURITY-TOKEN": this.token,
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-      "Version": "2"
+      "X-IG-API-KEY":this.key,
+      "CST":this.cst,
+      "X-SECURITY-TOKEN":this.token,
+      "Content-Type":"application/json",
+      "Accept":"application/json"
     };
   }
 
-  async getMarkets(searchTerm) {
-    const h = await this.headers();
-    const res = await axios.get(this.apiUrl + "/markets", {
-      params: { searchTerm },
-      headers: h
-    });
-    return res.data;
+  async getMarketDetails(epic) {
+    return (await axios.get(this.base+"/markets/"+epic,{headers:await this.h()})).data;
   }
 
-  async placeTrade(body) {
-    const h = await this.headers();
-    const res = await axios.post(
-      this.apiUrl + "/positions/otc",
-      body,
-      { headers: h }
-    );
-    return res.data;
+  async getHistoricalPrices(epic,resolution,max=100) {
+    return (await axios.get(`${this.base}/prices/${epic}?resolution=${resolution}&max=${max}`,{headers:await this.h()})).data;
   }
 
-  async getHistorical(epic, resolution, max = 100) {
-    const h = await this.headers();
-    const res = await axios.get(`${this.apiUrl}/prices/${epic}`, {
-      params: { resolution, max },
-      headers: h
-    });
-    return res.data;
+  async placeOrder(body) {
+    return (await axios.post(this.base+"/positions/otc",body,{headers:await this.h()})).data;
   }
 
-  async getHistoricalRange(epic, resolution, from, to) {
-    const h = await this.headers();
-    const res = await axios.get(`${this.apiUrl}/prices/${epic}`, {
-      params: { resolution, from, to },
-      headers: h
-    });
-    return res.data;
+  async getPositions() {
+    return (await axios.get(this.base+"/positions",{headers:await this.h()})).data;
   }
 
-  async call(endpoint, opts) {
-    const h = await this.headers();
-    const url = this.apiUrl + "/" + endpoint;
+  async getAccountSummary() {
+    return (await axios.get(this.base+"/accounts",{headers:await this.h()})).data;
+  }
 
-    if (!opts.method || opts.method.toUpperCase() === "GET") {
-      return (
-        await axios.get(url, {
-          headers: h,
-          params: opts.params || {}
-        })
-      ).data;
-    }
-
-    return (
-      await axios({
-        url,
-        method: opts.method.toUpperCase(),
-        headers: h,
-        data: opts.body || {}
-      })
-    ).data;
+  async closePosition(dealId) {
+    return (await axios.post(this.base+"/positions/otc",
+      { dealId, direction:"SELL", size:1 },
+      { headers:await this.h() }
+    )).data;
   }
 }

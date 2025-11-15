@@ -1,50 +1,73 @@
 import express from "express";
 import cors from "cors";
-import { createSseStream, MCPServer } from "@modelcontextprotocol/sdk/server/sse.js";
-
-const INTERNAL_MCP_PATH = "/mcp";
-const PUBLIC_BRIDGE_PATH = "/public-mcp";
-
-const IG_API_KEY = process.env.IG_API_KEY;
-const IG_API_IDENTIFIER = process.env.IG_API_IDENTIFIER;
-const IG_API_PASSWORD = process.env.IG_API_PASSWORD;
-const SHARED_SECRET = process.env.SHARED_SECRET || "potato";
+import IGClient from "./igClient.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const mcpServer = new MCPServer({
-  name: "ig-mcp",
-});
+const PORT = process.env.PORT || 8080;
+const SHARED_SECRET = process.env.MCP_SHARED_SECRET || "potato";
 
-mcpServer.tool("ping", {
-  description: "Basic connectivity check",
-  execute: async () => ({ ok: true, timestamp: Date.now() })
-});
-
-app.get(INTERNAL_MCP_PATH, async (req, res) => {
+function checkAuth(req, res) {
   const auth = req.headers.authorization || "";
   if (!auth.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Missing Bearer token" });
+    res.writeHead(401); res.end("Unauthorized"); return false;
   }
-  const token = auth.substring(7);
-
-  if (token !== SHARED_SECRET) {
-    return res.status(403).json({ error: "Invalid Bearer token" });
+  if (auth.substring(7) !== SHARED_SECRET) {
+    res.writeHead(403); res.end("Forbidden"); return false;
   }
+  return true;
+}
 
-  const stream = createSseStream(mcpServer);
-  stream.handleRequest(req, res);
+app.get("/mcp", (req, res) => {
+  if (!checkAuth(req, res)) return;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache", Connection: "keep-alive"
+  });
+
+  req.on("data", async chunk => handleRPC(chunk, res));
+  req.on("close", () => res.end());
 });
 
-app.get(PUBLIC_BRIDGE_PATH, async (req, res) => {
-  req.headers.authorization = `Bearer ${SHARED_SECRET}`;
-  const stream = createSseStream(mcpServer);
-  stream.handleRequest(req, res);
+app.get("/public-mcp", (req, res) => {
+  req.headers.authorization = "Bearer " + SHARED_SECRET;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache", Connection: "keep-alive"
+  });
+
+  req.on("data", async chunk => handleRPC(chunk, res));
+  req.on("close", () => res.end());
 });
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`MCP server running on port ${PORT}`);
-});
+async function handleRPC(chunk, res) {
+  try {
+    const { id, method, params } = JSON.parse(chunk.toString());
+    const ig = new IGClient();
+
+    function send(resp) {
+      res.write("data: " + JSON.stringify(resp) + "\n\n");
+    }
+
+    try {
+      switch (method) {
+        case "ping": return send({ id, result: { pong: true }});
+        case "getMarketDetails": return send({ id, result: await ig.getMarketDetails(params.epic) });
+        case "getHistoricalPrices": return send({ id, result: await ig.getHistoricalPrices(params.epic, params.resolution, params.max) });
+        case "placeOrder": return send({ id, result: await ig.placeOrder(params) });
+        case "getPositions": return send({ id, result: await ig.getPositions() });
+        case "getAccountSummary": return send({ id, result: await ig.getAccountSummary() });
+        case "closePosition": return send({ id, result: await ig.closePosition(params.dealId) });
+        default: return send({ id, error: "Unknown method" });
+      }
+    } catch(e) {
+      return send({ id, error: e.toString() });
+    }
+  } catch {
+    res.write("data: {"error":"Invalid JSON"}\n\n");
+  }
+}
+
+app.listen(PORT, ()=>console.log("MCP server running on",PORT));
