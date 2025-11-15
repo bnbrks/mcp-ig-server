@@ -1,9 +1,10 @@
 {
-  "name": "ig-mcp-v3-ws",
+  "name": "ig-mcp-v3-ws-final",
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.2.0",
-    "axios": "^1.6.2"
+    "axios": "^1.6.2",
+    "ws": "^8.17.0"
   }
 }
