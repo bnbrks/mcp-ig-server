@@ -18,50 +18,56 @@ const IG_API_KEY = process.env.IG_API_KEY;
 const IG_IDENTIFIER = process.env.IG_IDENTIFIER;
 const IG_PASSWORD = process.env.IG_PASSWORD;
 const IG_API_URL = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
+const IG_ACCOUNT_ID = process.env.IG_ACCOUNT_ID;
+
+if (!IG_ACCOUNT_ID) {
+  throw new Error("FATAL: IG_ACCOUNT_ID is missing. Set it in Railway.");
+}
 // --------------------------------------------
 
 let CST = null;
 let XST = null;
 
-// --------------- IG LOGIN (FIXED) ------------------
+// --------------- IG LOGIN ------------------
 async function igLogin() {
   const res = await fetch(IG_API_URL + "/session", {
     method: "POST",
     headers: {
-      "Content-Type": "application/json; charset=UTF-8",
-      "Accept": "application/json; charset=UTF-8",
+      "Content-Type": "application/json",
+      "Accept": "application/json",
       "X-IG-API-KEY": IG_API_KEY,
-      "Version": "2"
+      "X-IG-ACCOUNT-ID": IG_ACCOUNT_ID,     // <---- NEW: Force account
+      "Version": "3"
     },
     body: JSON.stringify({
       identifier: IG_IDENTIFIER,
-      password: IG_PASSWORD
+      password: IG_PASSWORD,
+      encryptedPassword: false
     })
   });
 
   CST = res.headers.get("CST");
   XST = res.headers.get("X-SECURITY-TOKEN");
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error("IG login failed: " + res.status + " | " + text);
-  }
+  if (!res.ok)
+    throw new Error("IG login failed: " + res.status + " | " + (await res.text()));
 
   return { CST, XST };
 }
-// ----------------------------------------------------
+// --------------------------------------------
 
 // Retrieve headers with refreshed tokens if needed
 async function igHeaders() {
   if (!CST || !XST) await igLogin();
 
   return {
-    "Content-Type": "application/json; charset=UTF-8",
-    "Accept": "application/json; charset=UTF-8",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
     "X-IG-API-KEY": IG_API_KEY,
-    "CST": CST,
+    "X-IG-ACCOUNT-ID": IG_ACCOUNT_ID,  // <---- NEW
+    CST,
     "X-SECURITY-TOKEN": XST,
-    "Version": "2"
+    "Version": "3"
   };
 }
 
@@ -181,11 +187,7 @@ app.get("/mcp", async (req, res) => {
     Connection: "keep-alive"
   });
 
-  res.write(
-    "data: " +
-      JSON.stringify({ jsonrpc: "2.0", method: "ready" }) +
-      "\n\n"
-  );
+  res.write("data: " + JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\n\n");
 
   req.on("data", async chunk => {
     try {
