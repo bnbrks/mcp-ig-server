@@ -1,4 +1,4 @@
-import express from "express"; 
+import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 
@@ -6,11 +6,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 8080;
+// ------------ SECURITY: NO FALLBACK TOKEN ------------
 if (!process.env.MCP_AUTH_TOKEN) {
-  throw new Error("MCP_AUTH_TOKEN environment variable is required.");
+  throw new Error("FATAL: MCP_AUTH_TOKEN environment variable is missing.");
 }
 const AUTH = process.env.MCP_AUTH_TOKEN;
+// -----------------------------------------------------
 
 // IG API ENV
 const IG_API_KEY = process.env.IG_API_KEY;
@@ -100,7 +101,7 @@ const IG = {
   }
 };
 
-// RPC HANDLER
+// JSON-RPC HANDLER
 async function handleRPC({ id, method, params }) {
   try {
     switch (method) {
@@ -152,7 +153,7 @@ app.post("/rpc", async (req, res) => {
   res.json(response);
 });
 
-// GET /mcp â SSE
+// GET /mcp — SSE
 app.get("/mcp", async (req, res) => {
   if (!checkAuth(req, res)) return;
 
@@ -162,16 +163,15 @@ app.get("/mcp", async (req, res) => {
     "Connection": "keep-alive"
   });
 
-  // Send initial ready signal
-  res.write("data: " + JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\n\n");
+  res.write("data: " + JSON.stringify({ jsonrpc: "2.0", method: "ready" }) + "\\n\\n");
 
   req.on("data", async chunk => {
     try {
       const rpc = JSON.parse(chunk.toString());
       const response = await handleRPC(rpc);
-      res.write("data: " + JSON.stringify(response) + "\n\n");
+      res.write("data: " + JSON.stringify(response) + "\\n\\n");
     } catch {
-      res.write("data: {\"error\":\"Invalid JSON\"}\n\n");
+      res.write("data: {\\\"error\\\":\\\"Invalid JSON\\\"}\\n\\n");
     }
   });
 
