@@ -17,16 +17,16 @@ const AUTH = process.env.MCP_AUTH_TOKEN;
 const IG_API_KEY = process.env.IG_API_KEY;
 const IG_IDENTIFIER = process.env.IG_IDENTIFIER;
 const IG_PASSWORD = process.env.IG_PASSWORD;
-const IG_ACCOUNT_ID = process.env.IG_ACCOUNT_ID;      // Your spreadbet account
+const IG_ACCOUNT_ID = process.env.IG_ACCOUNT_ID;
 const IG_API_URL = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
 // --------------------------------------------
 
 let CST = null;
 let XST = null;
 
-// --------------- IG LOGIN (VERSION 2 REQUIRED) ------------------
+// ------------------- IG LOGIN (Version 2) ----------------------
 async function igLogin() {
-  console.log("Performing IG login…");
+  console.log("Performing IG login (Version 2)…");
 
   const res = await fetch(`${IG_API_URL}/session`, {
     method: "POST",
@@ -34,7 +34,7 @@ async function igLogin() {
       "Content-Type": "application/json",
       "Accept": "application/json; charset=UTF-8",
       "X-IG-API-KEY": IG_API_KEY,
-      "Version": "2"   // ← IMPORTANT: login must use Version 2
+      "Version": "2"   // LOGIN MUST USE VERSION 2
     },
     body: JSON.stringify({
       identifier: IG_IDENTIFIER,
@@ -45,25 +45,36 @@ async function igLogin() {
   const json = await res.json();
 
   if (!res.ok) {
-    console.log("IG login error:", json);
-    throw new Error(
-      `IG login failed: ${res.status} | ${JSON.stringify(json)}`
-    );
+    console.log("IG Login Failed:", json);
+    throw new Error(`IG login failed: ${res.status} | ${JSON.stringify(json)}`);
   }
 
   CST = res.headers.get("CST");
   XST = res.headers.get("X-SECURITY-TOKEN");
 
-  console.log("IG login successful. CST/XST updated.");
+  console.log("IG Login Success. CST/XST updated.");
   return { CST, XST };
 }
-// ---------------------------------------------------------------
+// --------------------------------------------------------------
 
 
-// ----------- IG HEADERS (VERSION 3 FOR ALL OTHER CALLS) --------
-async function igHeaders() {
+// ------- IG HEADERS WITH VERSION SELECTION PER ENDPOINT --------
+async function igHeaders(endpointType = "trade") {
   if (!CST || !XST) {
     await igLogin();
+  }
+
+  let version;
+
+  switch (endpointType) {
+    case "login":
+      version = "2"; break;
+    case "market":
+    case "price":
+      version = "1"; break;  // MARKET DATA USES VERSION 1
+    case "trade":
+    default:
+      version = "3"; break;  // POSITIONS & TRADES USE VERSION 3
   }
 
   return {
@@ -72,47 +83,41 @@ async function igHeaders() {
     "X-IG-API-KEY": IG_API_KEY,
     CST,
     "X-SECURITY-TOKEN": XST,
-    "X-IG-ACCOUNT-ID": IG_ACCOUNT_ID,   // ← Correct IG header
-    "Version": "3"                       // ← Market/prices require Version 3
+    "X-IG-ACCOUNT-ID": IG_ACCOUNT_ID,
+    "Version": version
   };
 }
 // --------------------------------------------------------------
 
 
-// ----------- IG REQUEST WRAPPER WITH AUTO RETRY ---------------
+// ---------------- IG REQUEST WRAPPER --------------------------
 async function igRequest(path, options = {}) {
+  const endpointType = options.endpointType || "trade";
   const url = IG_API_URL + path;
 
-  // First attempt
+  // Initial request
   let res = await fetch(url, {
     method: options.method || "GET",
-    headers: await igHeaders(),
+    headers: await igHeaders(endpointType),
     body: options.body || null
   });
 
   let json;
-  try {
-    json = await res.json();
-  } catch {
-    json = {};
-  }
+  try { json = await res.json(); } catch { json = {}; }
 
-  // Auto-refresh tokens on expiry
+  // Auto-refresh login on invalid token
   if (json.errorCode === "error.security.client-token-invalid") {
-    console.log("IG token invalid — refreshing…");
+    console.log("Token invalid — refreshing CST/XST with login…");
+
     await igLogin();
 
     res = await fetch(url, {
       method: options.method || "GET",
-      headers: await igHeaders(),
+      headers: await igHeaders(endpointType),
       body: options.body || null
     });
 
-    try {
-      json = await res.json();
-    } catch {
-      json = {};
-    }
+    try { json = await res.json(); } catch { json = {}; }
   }
 
   return json;
@@ -120,26 +125,30 @@ async function igRequest(path, options = {}) {
 // --------------------------------------------------------------
 
 
-// ----------------- IG API METHODS -----------------------------
+// ----------------- IG METHODS --------------------------------
 const IG = {
   getMarkets(epic) {
-    return igRequest(`/markets/${epic}`);
+    return igRequest(`/markets/${epic}`, {
+      endpointType: "market"
+    });
   },
 
   getPrices(epic, resolution, max = 10) {
     return igRequest(
-      `/prices/${epic}?resolution=${resolution}&max=${max}`
+      `/prices/${epic}?resolution=${resolution}&max=${max}`,
+      { endpointType: "price" }
     );
   },
 
   getPositions() {
-    return igRequest(`/positions`);
+    return igRequest(`/positions`, { endpointType: "trade" });
   },
 
   openPosition(body) {
     return igRequest(`/positions/otc`, {
       method: "POST",
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      endpointType: "trade"
     });
   },
 
@@ -150,14 +159,15 @@ const IG = {
         dealId,
         direction: "SELL",
         size: 1
-      })
+      }),
+      endpointType: "trade"
     });
   }
 };
 // --------------------------------------------------------------
 
 
-// ----------------- JSON-RPC HANDLER ---------------------------
+// ---------------- JSON-RPC HANDLER ----------------------------
 async function handleRPC({ id, method, params }) {
   try {
     switch (method) {
@@ -173,11 +183,7 @@ async function handleRPC({ id, method, params }) {
       case "ig.getPrices":
         return {
           id,
-          result: await IG.getPrices(
-            params.epic,
-            params.resolution,
-            params.max
-          )
+          result: await IG.getPrices(params.epic, params.resolution, params.max)
         };
 
       case "ig.getPositions":
@@ -199,7 +205,7 @@ async function handleRPC({ id, method, params }) {
 // --------------------------------------------------------------
 
 
-// ---------------- AUTH MIDDLEWARE -----------------------------
+// ------------------- AUTH MIDDLEWARE --------------------------
 function checkAuth(req, res) {
   const header = req.headers.authorization || "";
   if (header !== `Bearer ${AUTH}`) {
@@ -211,7 +217,7 @@ function checkAuth(req, res) {
 // --------------------------------------------------------------
 
 
-// ---------------- POST /rpc -----------------------------------
+// -------------------- POST /rpc -------------------------------
 app.post("/rpc", async (req, res) => {
   if (!checkAuth(req, res)) return;
 
@@ -253,7 +259,7 @@ app.get("/mcp", async (req, res) => {
 // --------------------------------------------------------------
 
 
-// ---------------- START SERVER --------------------------------
+// -------------------- START SERVER ----------------------------
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, () => {
