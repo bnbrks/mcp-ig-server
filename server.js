@@ -1,90 +1,50 @@
 import express from "express";
-import IGClient from "./igClient.js";
+import cors from "cors";
+import { createSseStream, MCPServer } from "@modelcontextprotocol/sdk/server/sse.js";
+
+const INTERNAL_MCP_PATH = "/mcp";
+const PUBLIC_BRIDGE_PATH = "/public-mcp";
+
+const IG_API_KEY = process.env.IG_API_KEY;
+const IG_API_IDENTIFIER = process.env.IG_API_IDENTIFIER;
+const IG_API_PASSWORD = process.env.IG_API_PASSWORD;
+const SHARED_SECRET = process.env.SHARED_SECRET || "potato";
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
+const mcpServer = new MCPServer({
+  name: "ig-mcp",
+});
+
+mcpServer.tool("ping", {
+  description: "Basic connectivity check",
+  execute: async () => ({ ok: true, timestamp: Date.now() })
+});
+
+app.get(INTERNAL_MCP_PATH, async (req, res) => {
+  const auth = req.headers.authorization || "";
+  if (!auth.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing Bearer token" });
+  }
+  const token = auth.substring(7);
+
+  if (token !== SHARED_SECRET) {
+    return res.status(403).json({ error: "Invalid Bearer token" });
+  }
+
+  const stream = createSseStream(mcpServer);
+  stream.handleRequest(req, res);
+});
+
+app.get(PUBLIC_BRIDGE_PATH, async (req, res) => {
+  req.headers.authorization = `Bearer ${SHARED_SECRET}`;
+  const stream = createSseStream(mcpServer);
+  stream.handleRequest(req, res);
+});
+
 const PORT = process.env.PORT || 8080;
-const SECRET = process.env.MCP_SHARED_SECRET;
-
-// ---- AUTH ----
-function checkAuth(req, res) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith("Bearer ")) {
-    res.writeHead(401);
-    res.end("Unauthorized");
-    return false;
-  }
-  const token = auth.split(" ")[1];
-  if (token !== SECRET) {
-    res.writeHead(401);
-    res.end("Unauthorized");
-    return false;
-  }
-  return true;
-}
-
-// ---- SSE MCP ----
-app.get("/mcp", (req, res) => {
-  if (!checkAuth(req, res)) return;
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
-  });
-
-  const ig = new IGClient();
-
-  function send(msg) {
-    res.write(`data: ${JSON.stringify(msg)}\n\n`);
-  }
-
-  req.on("data", async chunk => {
-    try {
-      const data = JSON.parse(chunk.toString());
-      const { id, method, params } = data;
-
-      async function ok(result) { send({ id, result }); }
-      async function err(e) { send({ id, error: e.toString() }); }
-
-      try {
-        switch (method) {
-          case "ping":
-            return ok({ pong: true });
-
-          case "ig.getMarkets":
-            return ok(await ig.getMarkets(params.searchTerm));
-
-          case "ig.placeTrade":
-            return ok(await ig.placeTrade(params));
-
-          case "ig.getHistorical":
-            return ok(await ig.getHistorical(params.epic, params.resolution, params.max));
-
-          case "ig.getHistoricalRange":
-            return ok(await ig.getHistoricalRange(params.epic, params.resolution, params.from, params.to));
-
-          case "ig.call":
-            return ok(await ig.call(params.endpoint, params));
-
-          default:
-            return err("Unknown method " + method);
-        }
-      } catch (e) {
-        return err(e);
-      }
-
-    } catch (e) {
-      send({ error: "Invalid JSON" });
-    }
-  });
-
-  req.on("close", () => res.end());
+app.listen(PORT, () => {
+  console.log(`MCP server running on port ${PORT}`);
 });
-
-app.get("/", (_, res) => {
-  res.send("IG MCP Server (Real Trading Enabled)");
-});
-
-app.listen(PORT, () => console.log("IG MCP REAL server running on", PORT));
