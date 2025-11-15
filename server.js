@@ -7,7 +7,10 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
-const AUTH = process.env.MCP_AUTH_TOKEN || "potato";
+if (!process.env.MCP_AUTH_TOKEN) {
+  throw new Error("MCP_AUTH_TOKEN environment variable is required.");
+}
+const AUTH = process.env.MCP_AUTH_TOKEN;
 
 // IG API ENV
 const IG_API_KEY = process.env.IG_API_KEY;
