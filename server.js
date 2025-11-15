@@ -15,26 +15,24 @@ const AUTH = process.env.MCP_AUTH_TOKEN;
 
 // ---------------- IG VARIABLES --------------
 const IG_API_KEY = process.env.IG_API_KEY;
-const IG_IDENTIFIER = process.env.IG_IDENTIFIER;   // username
+const IG_IDENTIFIER = process.env.IG_IDENTIFIER;
 const IG_PASSWORD = process.env.IG_PASSWORD;
-const IG_ACCOUNT_ID = process.env.IG_ACCOUNT_ID;   // spreadbet / CFD account
+const IG_ACCOUNT_ID = process.env.IG_ACCOUNT_ID;
 const IG_API_URL = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
+// --------------------------------------------
 
 let CST = null;
 let XST = null;
-// --------------------------------------------
 
 // --------------- IG LOGIN ------------------
 async function igLogin() {
-  console.log("Performing IG login…");
-
-  const res = await fetch(IG_API_URL + "/session", {
+  const res = await fetch(`${IG_API_URL}/session`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Accept": "application/json; charset=UTF-8",
       "X-IG-API-KEY": IG_API_KEY,
-      "Version": "2"
+      "Version": "3"
     },
     body: JSON.stringify({
       identifier: IG_IDENTIFIER,
@@ -42,100 +40,87 @@ async function igLogin() {
     })
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error("IG login failed: " + res.status + " | " + text);
-  }
-
   CST = res.headers.get("CST");
   XST = res.headers.get("X-SECURITY-TOKEN");
 
-  console.log("IG login successful, CST/XST refreshed.");
+  const json = await res.json();
+
+  if (!res.ok) {
+    throw new Error(
+      `IG login failed: ${res.status} | ${JSON.stringify(json)}`
+    );
+  }
+
   return { CST, XST };
 }
 // --------------------------------------------
 
-// -------------- IG REQUEST WRAPPER ----------
-async function igHeaders(extra = {}) {
+// Retrieve fully correct IG headers
+async function igHeaders() {
   if (!CST || !XST) {
     await igLogin();
   }
 
   return {
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json; charset=UTF-8",
-      "X-IG-API-KEY": IG_API_KEY,
-      CST,
-      "X-SECURITY-TOKEN": XST,
-      "Version": "2",
-      "IG-ACCOUNT-ID": IG_ACCOUNT_ID,
-      ...extra.headers
-    },
-    method: extra.method || "GET",
-    body: extra.body || null
+    "Content-Type": "application/json",
+    "Accept": "application/json; charset=UTF-8",
+    "X-IG-API-KEY": IG_API_KEY,
+    CST,
+    "X-SECURITY-TOKEN": XST,
+    "IG-ACCOUNT-ID": IG_ACCOUNT_ID,
+    "Version": "3"    // ← CRITICAL FIX
   };
 }
 
-// Automatically refresh login if token expired
-async function igRequest(path, options = {}) {
-  const url = IG_API_URL + path;
-
-  // First try
-  let res = await fetch(url, await igHeaders(options));
-  let json;
-
-  try {
-    json = await res.json();
-  } catch {
-    json = {};
-  }
-
-  // If IG token expired → auto re-login → retry once
-  if (json.errorCode === "error.security.client-token-invalid") {
-    console.log("IG token invalid — refreshing tokens and retrying…");
-    await igLogin();
-
-    res = await fetch(url, await igHeaders(options));
-    json = await res.json();
-  }
-
-  return json;
-}
-// --------------------------------------------
-
 // --------------- IG METHODS ------------------
 const IG = {
-  getMarkets(epic) {
-    return igRequest(`/markets/${epic}`);
+  async getMarkets(epic) {
+    const res = await fetch(`${IG_API_URL}/markets/${epic}`, {
+      method: "GET",
+      headers: await igHeaders()
+    });
+    return res.json();
   },
 
-  getPrices(epic, resolution, max = 10) {
-    return igRequest(
-      `/prices/${epic}?resolution=${resolution}&max=${max}`
+  async getPrices(epic, resolution, max = 10) {
+    const res = await fetch(
+      `${IG_API_URL}/prices/${epic}?resolution=${resolution}&max=${max}`,
+      {
+        method: "GET",
+        headers: await igHeaders()
+      }
     );
+    return res.json();
   },
 
-  getPositions() {
-    return igRequest(`/positions`);
+  async getPositions() {
+    const res = await fetch(`${IG_API_URL}/positions`, {
+      method: "GET",
+      headers: await igHeaders()
+    });
+    return res.json();
   },
 
-  openPosition(body) {
-    return igRequest(`/positions/otc`, {
+  async openPosition(body) {
+    const res = await fetch(`${IG_API_URL}/positions/otc`, {
       method: "POST",
+      headers: await igHeaders(),
       body: JSON.stringify(body)
     });
+    return res.json();
   },
 
-  closePosition(dealId) {
-    return igRequest(`/positions/otc`, {
+  async closePosition(dealId) {
+    const res = await fetch(`${IG_API_URL}/positions/otc`, {
       method: "POST",
+      headers: await igHeaders(),
       body: JSON.stringify({
         dealId,
         direction: "SELL",
         size: 1
       })
     });
+    return res.json();
   }
 };
 // --------------------------------------------
@@ -156,11 +141,7 @@ async function handleRPC({ id, method, params }) {
       case "ig.getPrices":
         return {
           id,
-          result: await IG.getPrices(
-            params.epic,
-            params.resolution,
-            params.max
-          )
+          result: await IG.getPrices(params.epic, params.resolution, params.max)
         };
 
       case "ig.getPositions":
@@ -212,6 +193,7 @@ app.get("/mcp", async (req, res) => {
     Connection: "keep-alive"
   });
 
+  // Notify client that connection is ready
   res.write(
     "data: " +
       JSON.stringify({ jsonrpc: "2.0", method: "ready" }) +
@@ -232,7 +214,10 @@ app.get("/mcp", async (req, res) => {
 });
 // --------------------------------------------
 
+// ----------------- PORT FIX -----------------
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () =>
-  console.log(`Hybrid MCP server running on port ${PORT}`)
-);
+// --------------------------------------------
+
+app.listen(PORT, () => {
+  console.log("Hybrid MCP server running on", PORT);
+});
