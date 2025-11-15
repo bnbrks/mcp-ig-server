@@ -1,53 +1,70 @@
 import axios from "axios";
 
 export class IGClient {
-  constructor(apiKey, identifier, password, baseUrl) {
-    this.apiKey = apiKey;
-    this.identifier = identifier;
-    this.password = password;
-    this.baseUrl = baseUrl;
-    this.client = axios.create({
-      baseURL: baseUrl,
-      headers: { "X-IG-API-KEY": apiKey, "Content-Type": "application/json" }
-    });
-    this.securityToken = null;
-    this.cst = null;
-  }
+    constructor() {
+        this.apiKey = process.env.IG_API_KEY;
+        this.username = process.env.IG_USERNAME;
+        this.password = process.env.IG_PASSWORD;
+        this.apiUrl = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
+        this.securityToken = null;
+        this.cst = null;
+    }
 
-  async login() {
-    const resp = await this.client.post("/session", {
-      identifier: this.identifier,
-      password: this.password,
-    });
-    this.cst = resp.headers["cst"];
-    this.securityToken = resp.headers["x-security-token"];
-    this.client.defaults.headers["CST"] = this.cst;
-    this.client.defaults.headers["X-SECURITY-TOKEN"] = this.securityToken;
-  }
+    async ensureSession() {
+        if (this.cst && this.securityToken) return;
 
-  async ensureAuth() {
-    if (!this.cst) await this.login();
-  }
+        const body = {
+            identifier: this.username,
+            password: this.password,
+        };
 
-  async getHistorical(epic, resolution, max) {
-    await this.ensureAuth();
-    const resp = await this.client.get(`/prices/${epic}`, {
-      params: { resolution, max },
-    });
-    return resp.data;
-  }
+        const headers = {
+            "X-IG-API-KEY": this.apiKey,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        };
 
-  async getHistoricalRange(epic, resolution, from, to) {
-    await this.ensureAuth();
-    const resp = await this.client.get(`/prices/${epic}`, {
-      params: { resolution, from, to },
-    });
-    return resp.data;
-  }
+        const res = await axios.post(`${this.apiUrl}/session`, body, { headers });
 
-  async placeTrade(body) {
-    await this.ensureAuth();
-    const resp = await this.client.post("/positions/otc", body);
-    return resp.data;
-  }
+        this.cst = res.headers["cst"];
+        this.securityToken = res.headers["x-security-token"];
+    }
+
+    async getMarkets(searchTerm) {
+        await this.ensureSession();
+
+        const res = await axios.get(
+            `${this.apiUrl}/markets?searchTerm=${encodeURIComponent(searchTerm)}`,
+            {
+                headers: {
+                    "X-IG-API-KEY": this.apiKey,
+                    "X-SECURITY-TOKEN": this.securityToken,
+                    "CST": this.cst,
+                    "Accept": "application/json",
+                },
+            }
+        );
+
+        return res.data;
+    }
+
+    async placeTrade(params) {
+        await this.ensureSession();
+
+        const res = await axios.post(
+            `${this.apiUrl}/positions/otc`,
+            params,
+            {
+                headers: {
+                    "X-IG-API-KEY": this.apiKey,
+                    "X-SECURITY-TOKEN": this.securityToken,
+                    "CST": this.cst,
+                    "Version": "2",
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+
+        return res.data;
+    }
 }
