@@ -1,187 +1,53 @@
 import express from "express";
-import axios from "axios";
+import { createMCPServer } from "@modelcontextprotocol/sdk/server";
+import { SseTransport } from "@modelcontextprotocol/sdk/server/transports/sse.js";
+import IGClient from "./igClient.js";
 
-const PORT = process.env.PORT || 8080;
-
-// ---- Security ----
-const SECRET = process.env.MCP_SHARED_SECRET;
-
-// ---- Express ----
 const app = express();
-app.use(express.json());
+const port = process.env.PORT || 8080;
 
-// ---- Auth Check ----
-function auth(req, res) {
-  const provided = req.headers["x-mcp-secret"];
-  if (!SECRET) return true;
-  if (provided !== SECRET) {
-    res.writeHead(401);
-    res.end("Unauthorized");
-    return false;
+const REQUIRED_SECRET = process.env.MCP_SHARED_SECRET;
+
+function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized (missing Bearer token)" });
   }
-  return true;
+  const token = auth.split(" ")[1];
+  if (token !== REQUIRED_SECRET) {
+    return res.status(401).json({ error: "Unauthorized (invalid token)" });
+  }
+  next();
 }
 
-// ---- SSE MCP Endpoint ----
-app.get("/mcp", (req, res) => {
-  if (!auth(req, res)) return;
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-
-  // send message to ChatGPT
-  function send(msg) {
-    res.write(`data: ${JSON.stringify(msg)}\n\n`);
-  }
-
-  // handle incoming data
-  req.on("close", () => res.end());
-
-  // Handle incoming JSON-RPC messages
-  req.on("data", async (chunk) => {
-    const raw = chunk.toString().trim();
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (e) {
-      send({ error: "Invalid JSON" });
-      return;
-    }
-
-    const { id, method, params } = data;
-
-    async function respond(result) {
-      send({ id, result });
-    }
-
-    async function respondErr(error) {
-      send({ id, error });
-    }
-
-    try {
-      // ---- IG CLIENT ----
-      const ig = new IGClient();
-
-      switch (method) {
-        case "ping":
-          return respond({ pong: true });
-
-        case "ig.getMarkets":
-          return respond(await ig.getMarkets(params.searchTerm));
-
-        case "ig.placeTrade":
-          return respond(await ig.placeTrade(params));
-
-        case "ig.getHistorical":
-          return respond(await ig.getHistorical(params.epic, params.resolution, params.max));
-
-        case "ig.getHistoricalRange":
-          return respond(await ig.getHistoricalRange(params.epic, params.resolution, params.from, params.to));
-
-        case "ig.call":
-          return respond(await ig.call(params.endpoint, params.options || {}));
-
-        default:
-          return respondErr("Unknown method: " + method);
-      }
-    } catch (err) {
-      return respondErr(err.toString());
-    }
-  });
+const server = createMCPServer({
+  name: "ig-mcp-server",
+  version: "1.0.0",
+  description: "IG Trading MCP Server"
 });
 
+const ig = new IGClient({
+  apiKey: process.env.IG_API_KEY,
+  identifier: process.env.IG_IDENTIFIER,
+  password: process.env.IG_PASSWORD,
+  accountId: process.env.IG_ACCOUNT_ID,
+  useDemo: process.env.IG_USE_DEMO === "true"
+});
 
-// ---- IG Client ----
-class IGClient {
-  constructor() {
-    this.apiKey = process.env.IG_API_KEY;
-    this.username = process.env.IG_USERNAME;
-    this.password = process.env.IG_PASSWORD;
-    this.apiUrl = process.env.IG_API_URL || "https://api.ig.com/gateway/deal";
-    this.cst = null;
-    this.token = null;
+server.tool("ig_get_historical", {
+  description: "Get IG historical price data",
+  input: { epic: "string", resolution: "string", max: "number" },
+  execute: async ({ epic, resolution, max }) => {
+    const data = await ig.getHistoricalPrices(epic, resolution, max);
+    return { data };
   }
+});
 
-  async ensureSession() {
-    if (this.cst && this.token) return;
+app.use("/mcp", authMiddleware, (req, res) => {
+  const transport = new SseTransport({ req, res });
+  server.connect(transport);
+});
 
-    const res = await axios.post(
-      this.apiUrl + "/session",
-      { identifier: this.username, password: this.password },
-      { headers: { "X-IG-API-KEY": this.apiKey, "Content-Type": "application/json" } }
-    );
+app.get("/", (req, res) => res.send("IG MCP Server running"));
 
-    this.cst = res.headers["cst"];
-    this.token = res.headers["x-security-token"];
-  }
-
-  async igHeaders() {
-    await this.ensureSession();
-    return {
-      "X-IG-API-KEY": this.apiKey,
-      CST: this.cst,
-      "X-SECURITY-TOKEN": this.token,
-      Accept: "application/json"
-    };
-  }
-
-  async getMarkets(term) {
-    const headers = await this.igHeaders();
-    const res = await axios.get(this.apiUrl + "/markets", {
-      params: { searchTerm: term },
-      headers
-    });
-    return res.data;
-  }
-
-  async placeTrade(body) {
-    const headers = await this.igHeaders();
-    const res = await axios.post(this.apiUrl + "/positions/otc", body, {
-      headers: { ...headers, "Content-Type": "application/json", Version: "2" }
-    });
-    return res.data;
-  }
-
-  async getHistorical(epic, resolution, max = 100) {
-    const headers = await this.igHeaders();
-    const res = await axios.get(this.apiUrl + "/prices/" + epic, {
-      params: { resolution, max },
-      headers
-    });
-    return res.data;
-  }
-
-  async getHistoricalRange(epic, resolution, from, to) {
-    const headers = await this.igHeaders();
-    const res = await axios.get(this.apiUrl + "/prices/" + epic, {
-      params: { resolution, from, to },
-      headers
-    });
-    return res.data;
-  }
-
-  async call(endpoint, options) {
-    const headers = await this.igHeaders();
-    const url = this.apiUrl + "/" + endpoint;
-    const method = (options.method || "GET").toLowerCase();
-
-    if (method === "get") {
-      return (await axios.get(url, { headers, params: options.params })).data;
-    }
-
-    return (
-      await axios({
-        url,
-        method,
-        headers: { ...headers, "Content-Type": "application/json" },
-        data: options.body || {}
-      })
-    ).data;
-  }
-}
-
-// ---- Start ----
-app.listen(PORT, () => console.log("MCP SSE server running on", PORT));
+app.listen(port, () => console.log(`MCP SSE server running on ${port}`));
