@@ -1,90 +1,61 @@
-// ----------------------------
-// MCP IG SERVER (patched)
-// ----------------------------
-
 import express from "express";
-import cors from "cors";
-import { createServer } from "http";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/transports/sse";
-import { Server as WebSocketServer } from "ws";
-import { IGClient } from "./igClient.js";   
 import { MCPServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { IGClient } from "./igClient.js";
 
-// Shared Secret Authentication
-const EXPECTED_SECRET = process.env.MCP_SHARED_SECRET;
+const PORT = process.env.PORT || 8080;
+const SECRET = process.env.MCP_SHARED_SECRET;
 
-function validateSecret(headers) {
-    const provided = headers["x-mcp-secret"];
-    if (!provided || provided !== EXPECTED_SECRET) {
-        console.error("❌ Unauthorized MCP connection attempt");
-        return false;
-    }
-    return true;
+const app = express();
+
+// ----- Auth -----
+function checkAuth(req, res) {
+  if (!SECRET) return true;
+  const provided = req.headers["x-mcp-secret"];
+  if (provided !== SECRET) {
+    res.writeHead(401);
+    res.end("Unauthorized");
+    return false;
+  }
+  return true;
 }
 
-// Express App Setup
-const app = express();
-app.use(cors());
-app.use(express.json());
-const PORT = process.env.PORT || 8080;
+// ----- MCP server -----
+const mcp = new MCPServer({ name: "ig-mcp-sse", version: "1.0.0" });
 
-// MCP Server Setup
-const mcp = new MCPServer({
-    name: "ig-mcp-server",
-    version: "1.0.0"
+mcp.setRequestHandler("ping", async () => ({ pong: true }));
+
+mcp.setRequestHandler("ig.getMarkets", async ({ params }) => {
+  const ig = new IGClient();
+  return await ig.getMarkets(params.searchTerm);
 });
 
-// Example handlers
-mcp.setRequestHandler("ping", async () => {
-    return { result: "pong" };
+mcp.setRequestHandler("ig.placeTrade", async ({ params }) => {
+  const ig = new IGClient();
+  return await ig.placeTrade(params);
 });
 
-mcp.setRequestHandler("get_markets", async ({ params }) => {
-    const ig = new IGClient();
-    return await ig.getMarkets(params.searchTerm);
-});
-
-mcp.setRequestHandler("place_trade", async ({ params }) => {
-    const ig = new IGClient();
-    return await ig.placeTrade(params);
-});
-
-// SSE Endpoint
+// ----- SSE Endpoint -----
 app.get("/mcp", (req, res) => {
-    if (!validateSecret(req.headers)) {
-        res.status(401).send("Unauthorized");
-        return;
-    }
-    const transport = new SSEServerTransport({ req, res });
-    mcp.connect(transport);
-    console.log("✅ SSE client connected");
+  if (!checkAuth(req, res)) return;
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const transport = {
+    send: msg => res.write(`data: ${JSON.stringify(msg)}
+
+`),
+    close: () => res.end()
+  };
+
+  mcp.connect(transport);
+
+  req.on("close", () => transport.close());
 });
 
-// Optional WebSocket Support
-const server = createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+app.get("/", (_, res) => res.send("IG MCP SSE server running."));
 
-server.on("upgrade", (req, socket, head) => {
-    if (!validateSecret(req.headers)) {
-        console.log("❌ WS unauthorized");
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
-    }
-    if (req.url === "/mcp") {
-        wss.handleUpgrade(req, socket, head, (ws) => {
-            mcp.connectWebSocket(ws);
-            console.log("🔄 WebSocket client connected");
-        });
-    }
-});
-
-// Root
-app.get("/", (_, res) => {
-    res.send("IG MCP Server running. Use /mcp to connect.");
-});
-
-// Start
-server.listen(PORT, () => {
-    console.log(`🚀 IG MCP Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log("SSE MCP running on", PORT));
